@@ -85,30 +85,33 @@ impl IPSPatch {
         }
     }
 
-    fn check_header(&self, mut patch: &File) -> bool {
+    fn check_header_impl(&self, mut patch: &File) -> Result<bool, std::io::Error> {
         const HEADER: [u8; 5] = *b"PATCH";
         let mut buffer = [0u8; 5];
-        patch.read_exact(&mut buffer).unwrap();
-        HEADER == buffer
+        patch.read_exact(&mut buffer)?;
+        Ok(HEADER == buffer)
     }
 
-    pub fn read_records(&mut self) {
-        let mut patch = File::open(self.patch_source.clone()).unwrap();
+    fn read_records_impl(&mut self, mut patch: &File) -> Result<(), std::io::Error> {
+        self.records.clear();
 
-        if !self.check_header(&patch) {
-            return;
+        if !self.check_header_impl(&patch)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid header",
+            ));
         }
 
         let mut buffer = [0u8; 5];
         let mut rle_buffer = [0u8; 3];
-        patch.seek(SeekFrom::Start(5)).unwrap();
+        patch.seek(SeekFrom::Start(5))?;
 
         while patch.read_exact(&mut buffer).is_ok() {
             let offset = (buffer[0] as u32) << 16 | (buffer[1] as u32) << 8 | (buffer[2] as u32);
             let size = (buffer[3] as u16) << 8 | (buffer[4] as u16);
             if size == 0 {
                 // run length encoded
-                patch.read_exact(&mut rle_buffer).unwrap();
+                patch.read_exact(&mut rle_buffer)?;
                 let size = (rle_buffer[0] as u16) << 8 | (rle_buffer[1] as u16);
                 self.records.push(Box::new(RleRecord {
                     offset,
@@ -116,28 +119,44 @@ impl IPSPatch {
                     val: rle_buffer[2],
                 }));
             } else {
-                let loc = patch.stream_position().unwrap();
+                let loc = patch.stream_position()?;
                 self.records
                     .push(Box::new(RawRecord::new(offset, loc, size)));
-                patch.seek(SeekFrom::Current(size as i64)).unwrap();
+                patch.seek(SeekFrom::Current(size as i64))?;
             }
         }
+        return Ok(());
     }
 
-    pub fn apply(&mut self, in_rom: &Path, out_rom: &Path) {
+    pub fn read_records(&mut self) -> Result<(), std::io::Error> {
+        let mut patch = File::open(self.patch_source.as_path())?;
+        self.read_records_impl(&mut patch)
+    }
+
+    pub fn check_header(&self) -> Result<bool, std::io::Error> {
+        let mut patch = File::open(self.patch_source.as_path())?;
+        self.check_header_impl(&mut patch)
+    }
+
+    pub fn apply(&mut self, in_rom: &Path, out_rom: &Path) -> Result<(), std::io::Error> {
+        let mut patch = File::open(self.patch_source.as_path())?;
+
         if self.records.is_empty() {
-            self.read_records();
+            self.read_records_impl(&mut patch)?;
         }
         if self.records.is_empty() {
-            return;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Patch contains no data",
+            ));
         }
 
-        let mut patch = File::open(self.patch_source.as_path()).unwrap();
-        let mut out_rom_file = File::create(out_rom).unwrap();
-        copy(in_rom, out_rom).unwrap();
+        let mut out_rom_file = File::create(out_rom)?;
+        copy(in_rom, out_rom)?;
 
         for record in &self.records {
-            record.apply(&mut out_rom_file, &mut patch).unwrap();
+            record.apply(&mut out_rom_file, &mut patch)?;
         }
+        Ok(())
     }
 }

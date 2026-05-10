@@ -9,5 +9,5 @@ fn main() {
 
     let mut ipspatch = ips::IPSPatch::new(patch_file);
 
-    ipspatch.apply(in_rom, out_rom);
+    ipspatch.apply(in_rom, out_rom).unwrap();
 }
